@@ -251,36 +251,43 @@ function dateShift(ds,n) {
 }
 function nearestAfter(data,target) { return data.find(d=>d.date>=target)||null; }
 
-// ── Parallel proxy race (ambil yang paling cepat) ──────────────────────────
+// ── Proxy list ─────────────────────────────────────────────────────────────
 const PROXIES = [
   u=>`https://corsproxy.io/?url=${encodeURIComponent(u)}`,
   u=>`https://api.allorigins.win/raw?url=${encodeURIComponent(u)}`,
   u=>`https://api.codetabs.com/v1/proxy?quest=${u}`,
   u=>`https://thingproxy.freeboard.io/fetch/${u}`,
+  u=>`https://proxy.cors.sh/${u}`,
+  u=>`https://yacdn.org/proxy/${u}`,
 ];
 
-function proxyRace(url, timeoutMs=14000) {
+// Race semua proxy paralel, validasi konten, ambil yang pertama valid
+function proxyRace(url, validate, timeoutMs=15000) {
   return new Promise((resolve, reject) => {
-    let settled=false;
-    let fails=0;
+    let settled=false, fails=0;
     const total=PROXIES.length;
     PROXIES.forEach(mkProxy => {
       const proxyUrl=mkProxy(url);
       const ctrl=new AbortController();
       const timer=setTimeout(()=>ctrl.abort(),timeoutMs);
-      fetch(proxyUrl,{signal:ctrl.signal})
-        .then(async r=>{
-          clearTimeout(timer);
-          if(!r.ok) throw new Error('HTTP '+r.status);
-          const txt=await r.text();
-          if(!txt||txt.length<10) throw new Error('empty');
-          if(!settled){settled=true;resolve(txt);}
-        })
-        .catch(()=>{
-          clearTimeout(timer);
-          fails++;
-          if(fails===total&&!settled) reject(new Error('Semua proxy gagal'));
-        });
+      fetch(proxyUrl, {
+        signal: ctrl.signal,
+        headers: {'Accept':'*/*','X-Requested-With':'XMLHttpRequest'}
+      })
+      .then(async r=>{
+        clearTimeout(timer);
+        if(!r.ok) throw new Error('HTTP '+r.status);
+        const txt=await r.text();
+        if(!txt||txt.length<30) throw new Error('response terlalu pendek');
+        // validasi konten sesuai tipe
+        if(validate&&!validate(txt)) throw new Error('konten tidak valid (HTML/error page)');
+        if(!settled){settled=true;resolve(txt);}
+      })
+      .catch(()=>{
+        clearTimeout(timer);
+        fails++;
+        if(fails===total&&!settled) reject(new Error('Semua proxy gagal untuk URL ini'));
+      });
     });
   });
 }
@@ -291,22 +298,25 @@ async function fromStooq(ticker, fromDate, toDate) {
   const d1=fromDate.replace(/-/g,'');
   const d2=toDate.replace(/-/g,'');
   const url=`https://stooq.com/q/d/l/?s=${sym}&d1=${d1}&d2=${d2}&i=d`;
-  const txt=await proxyRace(url, 14000);
 
-  if(txt.includes('Exceeded')||txt.includes('No data')||txt.trim().length<20)
-    throw new Error('Stooq tidak ada data / limit');
+  // Validasi: harus ada "Date" atau angka di baris kedua (CSV), bukan HTML
+  const isCSV = txt => {
+    const t=txt.trim();
+    if(t.startsWith('<')||t.startsWith('{')) return false;
+    if(t.includes('Exceeded')||t.includes('No data')||t.includes('exceeded')) return false;
+    const lines=t.split('\n');
+    return lines.length>=2 && lines[0].toLowerCase().includes('open');
+  };
 
+  const txt=await proxyRace(url, isCSV, 15000);
   const lines=txt.trim().split('\n');
   if(lines.length<2) throw new Error('Stooq: CSV kosong');
-  const hdr=lines[0].toLowerCase();
-  if(!hdr.includes('open')&&!hdr.includes('date')) throw new Error('Stooq: format tidak dikenal');
 
   const rows=[];
   for(let i=1;i<lines.length;i++){
     const c=lines[i].split(',');
     if(c.length<5) continue;
     let date=c[0].trim();
-    // Stooq kadang kirim YYYYMMDD
     if(date.length===8&&!date.includes('-')) date=date.slice(0,4)+'-'+date.slice(4,6)+'-'+date.slice(6,8);
     const o=+c[1],h=+c[2],l=+c[3],cl=+c[4];
     if(isNaN(o)||isNaN(h)||isNaN(l)||isNaN(cl)||o===0) continue;
@@ -317,23 +327,28 @@ async function fromStooq(ticker, fromDate, toDate) {
   return rows.sort((a,b)=>a.date.localeCompare(b.date));
 }
 
-// ── Source 2: Yahoo Finance JSON ───────────────────────────────────────────
+// ── Source 2: Yahoo Finance v8 JSON ───────────────────────────────────────
 async function fromYahoo(ticker, fromDate, toDate) {
   const sym=ticker.toUpperCase()+'.JK';
-  // Buffer ±10 hari supaya data tidak mepet
   const p1=Math.floor(new Date(dateShift(fromDate,-10)+'T00:00:00Z').getTime()/1000);
   const p2=Math.floor(new Date(dateShift(toDate,10)+'T00:00:00Z').getTime()/1000);
+
+  // Validasi: harus JSON dengan chart.result
+  const isYahooJSON = txt => {
+    try { const j=JSON.parse(txt); return !!(j?.chart); } catch(e){return false;}
+  };
+
   const urls=[
-    `https://query1.finance.yahoo.com/v8/finance/chart/${sym}?interval=1d&period1=${p1}&period2=${p2}&events=history&includePrePost=false`,
-    `https://query2.finance.yahoo.com/v8/finance/chart/${sym}?interval=1d&period1=${p1}&period2=${p2}&events=history&includePrePost=false`,
+    `https://query1.finance.yahoo.com/v8/finance/chart/${sym}?interval=1d&period1=${p1}&period2=${p2}&events=history`,
+    `https://query2.finance.yahoo.com/v8/finance/chart/${sym}?interval=1d&period1=${p1}&period2=${p2}&events=history`,
   ];
   let lastErr;
   for(const url of urls){
     try{
-      const txt=await proxyRace(url,14000);
+      const txt=await proxyRace(url, isYahooJSON, 15000);
       const json=JSON.parse(txt);
       const res=json?.chart?.result?.[0];
-      if(!res) throw new Error(json?.chart?.error?.description||'tidak ditemukan');
+      if(!res) throw new Error(json?.chart?.error?.description||'tidak ditemukan di Yahoo');
       const ts=res.timestamp||[];
       const q=res.indicators?.quote?.[0];
       if(!ts.length||!q) throw new Error('data kosong');
@@ -352,7 +367,52 @@ async function fromYahoo(ticker, fromDate, toDate) {
   throw lastErr||new Error('Yahoo gagal');
 }
 
-// ── Master: coba Stooq → Yahoo, pakai cache ────────────────────────────────
+// ── Source 3: Stooq versi alternatif symbol ────────────────────────────────
+// Beberapa emiten IDX di Stooq pakai suffix .id atau tanpa suffix
+async function fromStooqAlt(ticker, fromDate, toDate) {
+  const syms=[
+    ticker.toLowerCase()+'.id',
+    ticker.toLowerCase(),
+  ];
+  const d1=fromDate.replace(/-/g,'');
+  const d2=toDate.replace(/-/g,'');
+  const isCSV = txt => {
+    const t=txt.trim();
+    if(t.startsWith('<')||t.startsWith('{')) return false;
+    if(t.includes('Exceeded')||t.includes('No data')) return false;
+    return t.split('\n').length>=2 && t.toLowerCase().includes('open');
+  };
+  let lastErr;
+  for(const sym of syms){
+    for(const altProxy of [
+      // Coba direct ke stooq tanpa proxy (kadang berhasil dari GitHub Pages)
+      u=>u,
+    ]){
+      try{
+        const url=`https://stooq.com/q/d/l/?s=${sym}&d1=${d1}&d2=${d2}&i=d`;
+        const r=await fetch(altProxy(url),{signal:AbortSignal.timeout(10000)});
+        const txt=await r.text();
+        if(!isCSV(txt)) throw new Error('bukan CSV');
+        const lines=txt.trim().split('\n');
+        const rows=[];
+        for(let i=1;i<lines.length;i++){
+          const c=lines[i].split(',');
+          if(c.length<5) continue;
+          let date=c[0].trim();
+          if(date.length===8&&!date.includes('-')) date=date.slice(0,4)+'-'+date.slice(4,6)+'-'+date.slice(6,8);
+          const o=+c[1],h=+c[2],l=+c[3],cl=+c[4];
+          if(isNaN(o)||o===0) continue;
+          if(date<fromDate||date>toDate) continue;
+          rows.push({date,open:Math.round(o),high:Math.round(h),low:Math.round(l),close:Math.round(cl)});
+        }
+        if(rows.length>0) return rows.sort((a,b)=>a.date.localeCompare(b.date));
+      }catch(e){lastErr=e;}
+    }
+  }
+  throw lastErr||new Error('Stooq direct gagal');
+}
+
+// ── Master: Stooq → Yahoo → Stooq Direct, pakai cache ────────────────────
 async function fetchData(ticker, fromDate, toDate, stepIds) {
   const key=ck(ticker,fromDate,toDate);
   const cached=cGet(key);
@@ -364,38 +424,38 @@ async function fetchData(ticker, fromDate, toDate, stepIds) {
 
   let errs=[];
 
-  // Stooq
-  stepSet(stepIds[0],'active');
+  // Source 1: Stooq via proxy
+  stepSet(stepIds[0],'active','Stooq.com via proxy...');
   try{
     const data=await fromStooq(ticker,fromDate,toDate);
     stepSet(stepIds[0],'done','Stooq ✓');
-    cSet(key,data);
-    return {data,source:'Stooq'};
-  }catch(e){
-    stepSet(stepIds[0],'fail','Stooq ✗ — coba Yahoo...');
-    errs.push('Stooq: '+e.message);
-  }
+    cSet(key,data); return {data,source:'Stooq'};
+  }catch(e){ stepSet(stepIds[0],'fail','Stooq gagal → coba Yahoo...'); errs.push('Stooq: '+e.message); }
 
-  // Yahoo
-  stepSet(stepIds[1],'active');
+  // Source 2: Yahoo Finance via proxy
+  stepSet(stepIds[1],'active','Yahoo Finance via proxy...');
   try{
     const data=await fromYahoo(ticker,fromDate,toDate);
-    stepSet(stepIds[1],'done','Yahoo Finance ✓');
-    cSet(key,data);
-    return {data,source:'Yahoo'};
-  }catch(e){
-    stepSet(stepIds[1],'fail','Yahoo ✗');
-    errs.push('Yahoo: '+e.message);
-  }
+    stepSet(stepIds[1],'done','Yahoo ✓');
+    cSet(key,data); return {data,source:'Yahoo'};
+  }catch(e){ stepSet(stepIds[1],'fail','Yahoo gagal → coba Stooq direct...'); errs.push('Yahoo: '+e.message); }
+
+  // Source 3: Stooq direct (tanpa proxy — kadang berhasil dari GitHub Pages)
+  stepSet(stepIds[2],'active','Stooq direct (no proxy)...');
+  try{
+    const data=await fromStooqAlt(ticker,fromDate,toDate);
+    stepSet(stepIds[2],'done','Stooq Direct ✓');
+    cSet(key,data); return {data,source:'Stooq-Direct'};
+  }catch(e){ stepSet(stepIds[2],'fail','Semua sumber gagal'); errs.push('Stooq-Direct: '+e.message); }
 
   throw new Error(
-    `Data ${ticker} tidak tersedia dari semua sumber.<br><br>`+
-    `<b>Detail error:</b><br>${errs.join('<br>')}<br><br>`+
-    `<b>Tips:</b><br>`+
-    `• Kode saham 4 huruf IDX, tanpa .JK (contoh: BBCA, TLKM, BRIS, GOTO)<br>`+
-    `• Emiten kecil/delisted mungkin tidak ada di Stooq/Yahoo<br>`+
-    `• Coba lagi — proxy kadang sibuk sesaat<br>`+
-    `• Rentang tanggal terlalu lama? Coba persingkat dulu`
+    `Data <b>${ticker}</b> tidak berhasil diambil dari semua sumber.<br><br>`+
+    `<b>Detail:</b><br>${errs.map(e=>'• '+e).join('<br>')}<br><br>`+
+    `<b>Kemungkinan penyebab:</b><br>`+
+    `• Kode saham tidak ditemukan di Stooq/Yahoo (emiten baru/kecil/delisted)<br>`+
+    `• Semua proxy sedang sibuk — <b>coba lagi dalam 10-30 detik</b><br>`+
+    `• Pastikan kode 4 huruf IDX tanpa .JK (contoh: BBCA, BELL, GOTO, BRIS)<br>`+
+    `• Untuk emiten yang susah: coba rentang tanggal yang lebih pendek dulu`
   );
 }
 
@@ -406,9 +466,9 @@ async function runDaily() {
   if(!ticker) return showError('Masukkan kode saham.');
   if(!dateVal) return showError('Pilih tanggal screener.');
   const endDate=addBizDays(dateVal,35);
-  showLoading([`Stooq (${ticker}.ID)`,`Yahoo Finance (${ticker}.JK)`]);
+  showLoading([`Stooq (${ticker}.ID)`,`Yahoo Finance (${ticker}.JK)`,`Stooq Direct`]);
   try{
-    const {data,source}=await fetchData(ticker,dateVal,endDate,[0,1]);
+    const {data,source}=await fetchData(ticker,dateVal,endDate,[0,1,2]);
     document.getElementById('daily-badge').innerHTML=
       ticker+(source==='cache'?'<span class="cache-tag">CACHE</span>':'<span class="cache-tag">'+source+'</span>');
     document.getElementById('daily-meta').innerHTML=`Screener: ${dateVal}<br>${data.length} hari tersedia`;
@@ -456,9 +516,9 @@ async function runSwing() {
   if(!ticker) return showError('Masukkan kode saham.');
   if(!startVal||!endVal) return showError('Pilih rentang tanggal.');
   if(startVal>=endVal) return showError('Tanggal akhir harus lebih besar dari tanggal mulai.');
-  showLoading([`Stooq (${ticker}.ID)`,`Yahoo Finance (${ticker}.JK)`]);
+  showLoading([`Stooq (${ticker}.ID)`,`Yahoo Finance (${ticker}.JK)`,`Stooq Direct`]);
   try{
-    const {data,source}=await fetchData(ticker,startVal,endVal,[0,1]);
+    const {data,source}=await fetchData(ticker,startVal,endVal,[0,1,2]);
     const fo=data[0].open,lc=data[data.length-1].close;
     const hh=Math.max(...data.map(d=>d.high)),ll=Math.min(...data.map(d=>d.low));
     const pH=calcPct(hh,fo),pL=calcPct(ll,fo),pC=calcPct(lc,fo);
