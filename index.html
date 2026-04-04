@@ -1,0 +1,460 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Screener Backtest — IDX</title>
+<link href="https://fonts.googleapis.com/css2?family=Space+Mono:wght@400;700&family=Syne:wght@400;600;800&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --bg: #0a0a0f;
+    --surface: #12121a;
+    --surface2: #1a1a26;
+    --border: #2a2a3d;
+    --accent: #00e5a0;
+    --accent3: #4d9fff;
+    --text: #e8e8f0;
+    --muted: #6b6b8a;
+    --up: #00e5a0;
+    --down: #ff4d6d;
+    --neutral: #4d9fff;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { background: var(--bg); color: var(--text); font-family: 'Syne', sans-serif; min-height: 100vh; }
+  body::before {
+    content: '';
+    position: fixed;
+    inset: 0;
+    background-image: linear-gradient(var(--border) 1px, transparent 1px), linear-gradient(90deg, var(--border) 1px, transparent 1px);
+    background-size: 40px 40px;
+    opacity: 0.25;
+    pointer-events: none;
+    z-index: 0;
+  }
+  .container { position: relative; z-index: 1; max-width: 900px; margin: 0 auto; padding: 32px 16px 80px; }
+  header { margin-bottom: 32px; }
+  .logo-tag { font-family: 'Space Mono', monospace; font-size: 10px; color: var(--accent); letter-spacing: 4px; text-transform: uppercase; margin-bottom: 4px; }
+  h1 { font-size: clamp(28px, 6vw, 44px); font-weight: 800; letter-spacing: -1px; line-height: 1; }
+  h1 span { color: var(--accent); }
+
+  .free-badge {
+    display: inline-flex; align-items: center; gap: 6px;
+    font-family: 'Space Mono', monospace; font-size: 9px; letter-spacing: 2px;
+    color: var(--accent); background: rgba(0,229,160,0.1);
+    border: 1px solid rgba(0,229,160,0.3); border-radius: 20px;
+    padding: 4px 12px; margin-top: 8px; text-transform: uppercase;
+  }
+  .free-badge::before { content: '●'; font-size: 7px; animation: pulse 1.5s ease-in-out infinite; }
+  @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.3} }
+
+  .mode-tabs { display: flex; gap: 4px; margin-bottom: 24px; background: var(--surface); padding: 4px; border-radius: 8px; border: 1px solid var(--border); width: fit-content; }
+  .tab-btn { font-family: 'Space Mono', monospace; font-size: 11px; letter-spacing: 1px; text-transform: uppercase; padding: 10px 22px; border: none; border-radius: 6px; cursor: pointer; background: transparent; color: var(--muted); transition: all 0.2s; }
+  .tab-btn.active { background: var(--accent); color: #000; font-weight: 700; }
+  .tab-btn:hover:not(.active) { color: var(--text); background: var(--border); }
+
+  .panel { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 24px; margin-bottom: 24px; }
+  .panel-row { display: flex; gap: 12px; flex-wrap: wrap; align-items: flex-end; }
+  .field { display: flex; flex-direction: column; gap: 8px; flex: 1; min-width: 140px; }
+  .field label { font-family: 'Space Mono', monospace; font-size: 10px; letter-spacing: 2px; text-transform: uppercase; color: var(--muted); }
+  .field input { background: var(--surface2); border: 1px solid var(--border); border-radius: 8px; padding: 11px 14px; color: var(--text); font-family: 'Space Mono', monospace; font-size: 14px; text-transform: uppercase; outline: none; width: 100%; }
+  .field input:focus { border-color: var(--accent); box-shadow: 0 0 0 2px rgba(0,229,160,0.1); }
+  .field input[type="date"] { color-scheme: dark; text-transform: none; }
+  .btn-run { font-family: 'Space Mono', monospace; font-size: 12px; font-weight: 700; letter-spacing: 2px; text-transform: uppercase; padding: 12px 28px; background: var(--accent); color: #000; border: none; border-radius: 8px; cursor: pointer; transition: all 0.2s; white-space: nowrap; align-self: flex-end; }
+  .btn-run:hover { background: #00ffb3; transform: translateY(-1px); box-shadow: 0 4px 20px rgba(0,229,160,0.3); }
+  .panel-note { margin-top: 10px; font-family: 'Space Mono',monospace; font-size: 10px; color: var(--muted); letter-spacing: 1px; }
+
+  .loading { display: none; text-align: center; padding: 48px; color: var(--muted); font-family: 'Space Mono',monospace; font-size: 12px; letter-spacing: 2px; }
+  .loading.show { display: block; }
+  .spinner { width: 32px; height: 32px; border: 2px solid var(--border); border-top-color: var(--accent); border-radius: 50%; animation: spin 0.8s linear infinite; margin: 0 auto 16px; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  .loading-sub { color: var(--muted); font-size: 10px; margin-top: 8px; opacity: 0.6; }
+
+  .error-box { display: none; background: rgba(255,77,109,0.1); border: 1px solid rgba(255,77,109,0.3); border-radius: 8px; padding: 14px 18px; color: var(--down); font-family: 'Space Mono',monospace; font-size: 11px; margin-bottom: 20px; line-height: 1.7; }
+  .error-box.show { display: block; }
+
+  .results { display: none; }
+  .results.show { display: block; animation: fadeUp 0.4s ease; }
+  @keyframes fadeUp { from { opacity: 0; transform: translateY(16px); } to { opacity: 1; transform: translateY(0); } }
+
+  .result-header { display: flex; align-items: center; gap: 14px; margin-bottom: 20px; flex-wrap: wrap; }
+  .stock-badge { font-family: 'Space Mono',monospace; font-size: 20px; font-weight: 700; color: var(--accent); background: rgba(0,229,160,0.1); border: 1px solid rgba(0,229,160,0.3); padding: 8px 18px; border-radius: 8px; }
+  .result-meta { font-family: 'Space Mono',monospace; font-size: 11px; color: var(--muted); line-height: 1.8; }
+
+  .cards-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 14px; margin-bottom: 24px; }
+  .snapshot-card { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 20px; position: relative; overflow: hidden; transition: border-color 0.2s, transform 0.2s; }
+  .snapshot-card:hover { border-color: var(--accent); transform: translateY(-2px); }
+  .snapshot-card::before { content: ''; position: absolute; top: 0; left: 0; right: 0; height: 2px; background: linear-gradient(90deg, var(--accent), transparent); }
+  .card-period { font-family: 'Space Mono',monospace; font-size: 10px; letter-spacing: 3px; text-transform: uppercase; color: var(--accent); margin-bottom: 4px; }
+  .card-date { font-family: 'Space Mono',monospace; font-size: 11px; color: var(--muted); margin-bottom: 14px; }
+  .open-ref { margin-bottom: 12px; padding: 8px 12px; background: var(--surface2); border-radius: 6px; display: flex; justify-content: space-between; align-items: center; }
+  .open-ref-label { font-family: 'Space Mono',monospace; font-size: 10px; color: var(--muted); }
+  .open-ref-val { font-family: 'Space Mono',monospace; font-size: 13px; color: var(--accent3); font-weight: 700; }
+  .metric-row { display: flex; justify-content: space-between; align-items: center; padding: 7px 0; border-bottom: 1px solid var(--border); }
+  .metric-row:last-child { border-bottom: none; }
+  .metric-label { font-family: 'Space Mono',monospace; font-size: 10px; letter-spacing: 1px; text-transform: uppercase; color: var(--muted); }
+  .metric-values { text-align: right; }
+  .metric-price { font-family: 'Space Mono',monospace; font-size: 12px; font-weight: 700; color: var(--text); }
+  .metric-pct { font-family: 'Space Mono',monospace; font-size: 11px; font-weight: 700; margin-left: 6px; }
+  .pct-up { color: var(--up); }
+  .pct-down { color: var(--down); }
+  .pct-neutral { color: var(--neutral); }
+
+  .table-wrap { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; overflow: hidden; overflow-x: auto; }
+  .table-title { padding: 14px 20px; font-family: 'Space Mono',monospace; font-size: 10px; letter-spacing: 3px; text-transform: uppercase; color: var(--muted); border-bottom: 1px solid var(--border); display: flex; align-items: center; gap: 8px; }
+  .table-title::before { content: ''; width: 8px; height: 8px; border-radius: 50%; background: var(--accent); }
+  table { width: 100%; border-collapse: collapse; min-width: 500px; }
+  th { padding: 10px 14px; font-family: 'Space Mono',monospace; font-size: 9px; letter-spacing: 2px; text-transform: uppercase; color: var(--muted); text-align: left; border-bottom: 1px solid var(--border); background: var(--surface2); }
+  td { padding: 12px 14px; font-family: 'Space Mono',monospace; font-size: 11px; color: var(--text); border-bottom: 1px solid rgba(42,42,61,0.5); }
+  tr:last-child td { border-bottom: none; }
+  tr:hover td { background: rgba(0,229,160,0.03); }
+
+  .swing-summary { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 10px; margin-bottom: 20px; }
+  .swing-stat { background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 16px; text-align: center; }
+  .swing-stat-label { font-family: 'Space Mono',monospace; font-size: 9px; letter-spacing: 2px; text-transform: uppercase; color: var(--muted); margin-bottom: 6px; }
+  .swing-stat-val { font-family: 'Space Mono',monospace; font-size: 16px; font-weight: 700; color: var(--text); margin-bottom: 4px; }
+  .swing-stat-pct { font-family: 'Space Mono',monospace; font-size: 11px; font-weight: 700; }
+
+  .note { font-family: 'Space Mono',monospace; font-size: 10px; color: var(--muted); text-align: center; margin-top: 20px; letter-spacing: 1px; line-height: 1.8; }
+
+  @media (max-width: 600px) {
+    .panel-row { flex-direction: column; }
+    .cards-grid { grid-template-columns: 1fr; }
+  }
+</style>
+</head>
+<body>
+<div class="container">
+
+  <header>
+    <div class="logo-tag">IDX · Equity Research</div>
+    <h1>Screener <span>Backtest</span></h1>
+    <div class="free-badge">Gratis · No API Key · Yahoo Finance</div>
+  </header>
+
+  <div class="mode-tabs">
+    <button class="tab-btn active" onclick="switchMode('daily')">📅 Daily</button>
+    <button class="tab-btn" onclick="switchMode('swing')">📈 Swing Range</button>
+  </div>
+
+  <div id="panel-daily" class="panel">
+    <div class="panel-row">
+      <div class="field" style="max-width:150px">
+        <label>Kode Saham</label>
+        <input type="text" id="daily-ticker" placeholder="BBCA" maxlength="10" />
+      </div>
+      <div class="field" style="max-width:200px">
+        <label>Tanggal Screener</label>
+        <input type="date" id="daily-date" />
+      </div>
+      <button class="btn-run" onclick="runDaily()">▶ Jalankan</button>
+    </div>
+    <div class="panel-note">Menampilkan: H+1 · H+5 (1 Minggu) · H+22 (~1 Bulan)</div>
+  </div>
+
+  <div id="panel-swing" class="panel" style="display:none">
+    <div class="panel-row">
+      <div class="field" style="max-width:150px">
+        <label>Kode Saham</label>
+        <input type="text" id="swing-ticker" placeholder="BBCA" maxlength="10" />
+      </div>
+      <div class="field">
+        <label>Tanggal Mulai</label>
+        <input type="date" id="swing-start" />
+      </div>
+      <div class="field">
+        <label>Tanggal Akhir</label>
+        <input type="date" id="swing-end" />
+      </div>
+      <button class="btn-run" onclick="runSwing()">▶ Jalankan</button>
+    </div>
+    <div class="panel-note">High/Low/Close + % selama rentang tanggal yang dipilih</div>
+  </div>
+
+  <div class="error-box" id="error-box"></div>
+
+  <div class="loading" id="loading">
+    <div class="spinner"></div>
+    MENGAMBIL DATA...
+    <div class="loading-sub" id="loading-sub">Menghubungi Yahoo Finance...</div>
+  </div>
+
+  <div class="results" id="results-daily">
+    <div class="result-header">
+      <div class="stock-badge" id="daily-badge">BBCA</div>
+      <div class="result-meta" id="daily-meta"></div>
+    </div>
+    <div class="cards-grid" id="daily-cards"></div>
+    <div class="table-wrap">
+      <div class="table-title">Detail Per Periode</div>
+      <table>
+        <thead><tr>
+          <th>Periode</th><th>Tanggal</th><th>Open</th>
+          <th>High</th><th>%H/O</th>
+          <th>Low</th><th>%L/O</th>
+          <th>Close</th><th>%C/O</th>
+        </tr></thead>
+        <tbody id="daily-table-body"></tbody>
+      </table>
+    </div>
+  </div>
+
+  <div class="results" id="results-swing">
+    <div class="result-header">
+      <div class="stock-badge" id="swing-badge">BBCA</div>
+      <div class="result-meta" id="swing-meta"></div>
+    </div>
+    <div class="swing-summary" id="swing-summary"></div>
+    <div class="table-wrap">
+      <div class="table-title">Data Harian Selama Periode</div>
+      <table>
+        <thead><tr>
+          <th>Tanggal</th><th>Open</th>
+          <th>High</th><th>%H/O</th>
+          <th>Low</th><th>%L/O</th>
+          <th>Close</th><th>%C/O</th>
+        </tr></thead>
+        <tbody id="swing-table-body"></tbody>
+      </table>
+    </div>
+  </div>
+
+  <div class="note">
+    Data via Yahoo Finance · Saham IDX · Harga dalam IDR<br>
+    Past performance ≠ future results · Gratis tanpa API key
+  </div>
+</div>
+
+<script>
+let currentMode = 'daily';
+
+window.onload = () => {
+  const today = new Date().toISOString().split('T')[0];
+  const monthAgo = new Date(Date.now() - 30*86400000).toISOString().split('T')[0];
+  document.getElementById('daily-date').value = today;
+  document.getElementById('swing-end').value = today;
+  document.getElementById('swing-start').value = monthAgo;
+};
+
+document.addEventListener('keydown', e => {
+  if (e.key === 'Enter') currentMode === 'daily' ? runDaily() : runSwing();
+});
+
+function switchMode(mode) {
+  currentMode = mode;
+  document.querySelectorAll('.tab-btn').forEach((b,i) => {
+    b.classList.toggle('active', (i===0&&mode==='daily')||(i===1&&mode==='swing'));
+  });
+  document.getElementById('panel-daily').style.display = mode==='daily'?'':'none';
+  document.getElementById('panel-swing').style.display = mode==='swing'?'':'none';
+  hideAll();
+}
+
+function hideAll() {
+  ['loading','error-box','results-daily','results-swing'].forEach(id => {
+    document.getElementById(id).classList.remove('show');
+  });
+}
+
+function showError(msg) {
+  document.getElementById('error-box').innerHTML = '⚠ ' + msg;
+  document.getElementById('error-box').classList.add('show');
+  document.getElementById('loading').classList.remove('show');
+}
+
+function showLoading(sub) {
+  hideAll();
+  document.getElementById('loading-sub').textContent = sub || '';
+  document.getElementById('loading').classList.add('show');
+}
+
+const fmt = n => (n==null||isNaN(n)) ? '-' : Math.round(n).toLocaleString('id-ID');
+const pctCls = v => v>0?'pct-up':v<0?'pct-down':'pct-neutral';
+const pctStr = v => (v==null||isNaN(v))?'-':((v>=0?'+':'')+v.toFixed(2)+'%');
+const calcPct = (v,b) => b ? ((v-b)/b)*100 : 0;
+
+function addBizDays(dateStr, days) {
+  const d = new Date(dateStr + 'T12:00:00');
+  let c = 0;
+  while (c < days) {
+    d.setDate(d.getDate()+1);
+    if (d.getDay()!==0 && d.getDay()!==6) c++;
+  }
+  return d.toISOString().split('T')[0];
+}
+
+function toUnix(dateStr) {
+  return Math.floor(new Date(dateStr + 'T00:00:00+07:00').getTime() / 1000);
+}
+
+// CORS proxies — dicoba berurutan sampai berhasil
+const PROXIES = [
+  url => `https://corsproxy.io/?${encodeURIComponent(url)}`,
+  url => `https://api.allorigins.win/raw?url=${encodeURIComponent(url)}`,
+  url => `https://proxy.cors.sh/${url}`,
+];
+
+async function fetchWithProxy(url) {
+  let lastErr;
+  for (const proxy of PROXIES) {
+    try {
+      const r = await fetch(proxy(url), { signal: AbortSignal.timeout(12000) });
+      if (!r.ok) throw new Error(`HTTP ${r.status}`);
+      const text = await r.text();
+      if (text.length < 50) throw new Error('Respons terlalu pendek');
+      return text;
+    } catch(e) {
+      lastErr = e;
+    }
+  }
+  throw new Error('Semua proxy gagal. Cek koneksi internet: ' + lastErr.message);
+}
+
+async function fetchStockData(ticker, fromDate, toDate) {
+  const symbol = ticker.toUpperCase() + '.JK';
+
+  // Tambah buffer 7 hari sebelum dan sesudah untuk pastikan data cukup
+  const from = new Date(fromDate + 'T00:00:00');
+  from.setDate(from.getDate() - 7);
+  const to = new Date(toDate + 'T00:00:00');
+  to.setDate(to.getDate() + 7);
+
+  const p1 = toUnix(from.toISOString().split('T')[0]);
+  const p2 = toUnix(to.toISOString().split('T')[0]);
+
+  const yahooUrl = `https://query1.finance.yahoo.com/v8/finance/chart/${symbol}?interval=1d&period1=${p1}&period2=${p2}&events=history`;
+
+  const text = await fetchWithProxy(yahooUrl);
+
+  let json;
+  try { json = JSON.parse(text); } catch(e) { throw new Error('Gagal parse data Yahoo Finance. Coba lagi.'); }
+
+  const result = json?.chart?.result?.[0];
+  if (!result) {
+    const errMsg = json?.chart?.error?.description || 'Saham tidak ditemukan.';
+    throw new Error(`Yahoo Finance: ${errMsg}`);
+  }
+
+  const timestamps = result.timestamp || [];
+  const ohlcv = result.indicators?.quote?.[0];
+  if (!timestamps.length || !ohlcv) throw new Error('Tidak ada data historis untuk saham ini.');
+
+  const rows = [];
+  for (let i = 0; i < timestamps.length; i++) {
+    const date = new Date(timestamps[i] * 1000).toISOString().split('T')[0];
+    const open  = ohlcv.open?.[i];
+    const high  = ohlcv.high?.[i];
+    const low   = ohlcv.low?.[i];
+    const close = ohlcv.close?.[i];
+    if (open==null || high==null || low==null || close==null) continue;
+    if (date < fromDate || date > toDate) continue;
+    rows.push({ date, open: Math.round(open), high: Math.round(high), low: Math.round(low), close: Math.round(close) });
+  }
+
+  if (rows.length === 0) throw new Error('Tidak ada data perdagangan untuk rentang tanggal ini. Mungkin hari libur/weekend semua, atau saham tidak aktif.');
+
+  return rows.sort((a,b) => a.date.localeCompare(b.date));
+}
+
+function nearestAfter(data, target) {
+  return data.find(d => d.date >= target) || null;
+}
+
+async function runDaily() {
+  const ticker = document.getElementById('daily-ticker').value.trim().toUpperCase();
+  const dateVal = document.getElementById('daily-date').value;
+  if (!ticker) return showError('Masukkan kode saham.');
+  if (!dateVal) return showError('Pilih tanggal screener.');
+
+  showLoading(`Mengambil data ${ticker}.JK dari Yahoo Finance...`);
+  try {
+    const endDate = addBizDays(dateVal, 35);
+    const data = await fetchStockData(ticker, dateVal, endDate);
+
+    document.getElementById('daily-badge').textContent = ticker;
+    document.getElementById('daily-meta').innerHTML = `Tanggal Screener: ${dateVal}<br>${data.length} hari data tersedia`;
+
+    const periods = [
+      { label:'H+1',  key:1,  desc:'1 Hari Setelah Screener' },
+      { label:'H+5',  key:5,  desc:'1 Minggu Setelah Screener' },
+      { label:'H+22', key:22, desc:'~1 Bulan Setelah Screener' },
+    ];
+
+    const cardsEl = document.getElementById('daily-cards');
+    const tbodyEl = document.getElementById('daily-table-body');
+    cardsEl.innerHTML = ''; tbodyEl.innerHTML = '';
+
+    for (const p of periods) {
+      const d = nearestAfter(data, addBizDays(dateVal, p.key));
+      if (!d) {
+        cardsEl.innerHTML += `<div class="snapshot-card">
+          <div class="card-period">${p.label}</div><div class="card-date">${p.desc}</div>
+          <div style="color:var(--muted);font-family:'Space Mono',monospace;font-size:11px;margin-top:12px">Data belum tersedia</div>
+        </div>`;
+        continue;
+      }
+      const pH = calcPct(d.high,d.open), pL = calcPct(d.low,d.open), pC = calcPct(d.close,d.open);
+      cardsEl.innerHTML += `<div class="snapshot-card">
+        <div class="card-period">${p.label} — ${p.desc}</div>
+        <div class="card-date">${d.date}</div>
+        <div class="open-ref"><span class="open-ref-label">OPEN</span><span class="open-ref-val">${fmt(d.open)}</span></div>
+        <div class="metric-row"><span class="metric-label">HIGH</span><span class="metric-values"><span class="metric-price">${fmt(d.high)}</span><span class="metric-pct ${pctCls(pH)}">${pctStr(pH)}</span></span></div>
+        <div class="metric-row"><span class="metric-label">LOW</span><span class="metric-values"><span class="metric-price">${fmt(d.low)}</span><span class="metric-pct ${pctCls(pL)}">${pctStr(pL)}</span></span></div>
+        <div class="metric-row"><span class="metric-label">CLOSE</span><span class="metric-values"><span class="metric-price">${fmt(d.close)}</span><span class="metric-pct ${pctCls(pC)}">${pctStr(pC)}</span></span></div>
+      </div>`;
+      tbodyEl.innerHTML += `<tr>
+        <td style="color:var(--accent)">${p.label}</td><td>${d.date}</td><td>${fmt(d.open)}</td>
+        <td>${fmt(d.high)}</td><td class="${pctCls(pH)}">${pctStr(pH)}</td>
+        <td>${fmt(d.low)}</td><td class="${pctCls(pL)}">${pctStr(pL)}</td>
+        <td>${fmt(d.close)}</td><td class="${pctCls(pC)}">${pctStr(pC)}</td>
+      </tr>`;
+    }
+
+    document.getElementById('loading').classList.remove('show');
+    document.getElementById('results-daily').classList.add('show');
+  } catch(e) { showError(e.message); }
+}
+
+async function runSwing() {
+  const ticker = document.getElementById('swing-ticker').value.trim().toUpperCase();
+  const startVal = document.getElementById('swing-start').value;
+  const endVal = document.getElementById('swing-end').value;
+  if (!ticker) return showError('Masukkan kode saham.');
+  if (!startVal||!endVal) return showError('Pilih rentang tanggal.');
+  if (startVal >= endVal) return showError('Tanggal akhir harus lebih besar dari tanggal mulai.');
+
+  showLoading(`Mengambil data swing ${ticker}.JK (${startVal} → ${endVal})...`);
+  try {
+    const data = await fetchStockData(ticker, startVal, endVal);
+    const firstOpen = data[0].open, lastClose = data[data.length-1].close;
+    const highestHigh = Math.max(...data.map(d=>d.high));
+    const lowestLow = Math.min(...data.map(d=>d.low));
+    const pH = calcPct(highestHigh,firstOpen), pL = calcPct(lowestLow,firstOpen), pC = calcPct(lastClose,firstOpen);
+
+    document.getElementById('swing-badge').textContent = ticker;
+    document.getElementById('swing-meta').innerHTML = `${startVal} → ${endVal}<br>${data.length} hari perdagangan`;
+
+    document.getElementById('swing-summary').innerHTML = `
+      <div class="swing-stat"><div class="swing-stat-label">Open Awal</div><div class="swing-stat-val" style="color:var(--accent3)">${fmt(firstOpen)}</div><div class="swing-stat-pct" style="color:var(--muted)">${data[0].date}</div></div>
+      <div class="swing-stat"><div class="swing-stat-label">Highest High</div><div class="swing-stat-val">${fmt(highestHigh)}</div><div class="swing-stat-pct ${pctCls(pH)}">${pctStr(pH)}</div></div>
+      <div class="swing-stat"><div class="swing-stat-label">Lowest Low</div><div class="swing-stat-val">${fmt(lowestLow)}</div><div class="swing-stat-pct ${pctCls(pL)}">${pctStr(pL)}</div></div>
+      <div class="swing-stat"><div class="swing-stat-label">Close Akhir</div><div class="swing-stat-val">${fmt(lastClose)}</div><div class="swing-stat-pct ${pctCls(pC)}">${pctStr(pC)}</div></div>`;
+
+    document.getElementById('swing-table-body').innerHTML = data.map(d => {
+      const pH2=calcPct(d.high,d.open), pL2=calcPct(d.low,d.open), pC2=calcPct(d.close,d.open);
+      const isH=d.high===highestHigh, isL=d.low===lowestLow;
+      return `<tr ${isH?'style="background:rgba(0,229,160,0.05)"':isL?'style="background:rgba(255,77,109,0.05)"':''}>
+        <td style="color:var(--muted)">${d.date}${isH?' <span style="color:var(--up)">▲H</span>':''}${isL?' <span style="color:var(--down)">▼L</span>':''}</td>
+        <td>${fmt(d.open)}</td>
+        <td>${fmt(d.high)}</td><td class="${pctCls(pH2)}">${pctStr(pH2)}</td>
+        <td>${fmt(d.low)}</td><td class="${pctCls(pL2)}">${pctStr(pL2)}</td>
+        <td>${fmt(d.close)}</td><td class="${pctCls(pC2)}">${pctStr(pC2)}</td>
+      </tr>`;
+    }).join('');
+
+    document.getElementById('loading').classList.remove('show');
+    document.getElementById('results-swing').classList.add('show');
+  } catch(e) { showError(e.message); }
+}
+</script>
+</body>
+</html>
