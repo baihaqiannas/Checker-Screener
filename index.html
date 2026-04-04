@@ -286,73 +286,80 @@ function toUnix(dateStr) {
   return Math.floor(new Date(dateStr + 'T00:00:00+07:00').getTime() / 1000);
 }
 
-// CORS proxies — dicoba berurutan sampai berhasil
-const PROXIES = [
-  url => `https://corsproxy.io/?${encodeURIComponent(url)}`,
-  url => `https://api.allorigins.win/raw?url=${encodeURIComponent(url)}`,
-  url => `https://proxy.cors.sh/${url}`,
-];
-
-async function fetchWithProxy(url) {
-  let lastErr;
-  for (const proxy of PROXIES) {
-    try {
-      const r = await fetch(proxy(url), { signal: AbortSignal.timeout(12000) });
-      if (!r.ok) throw new Error(`HTTP ${r.status}`);
-      const text = await r.text();
-      if (text.length < 50) throw new Error('Respons terlalu pendek');
-      return text;
-    } catch(e) {
-      lastErr = e;
-    }
-  }
-  throw new Error('Semua proxy gagal. Cek koneksi internet: ' + lastErr.message);
-}
-
 async function fetchStockData(ticker, fromDate, toDate) {
   const symbol = ticker.toUpperCase() + '.JK';
 
-  // Tambah buffer 7 hari sebelum dan sesudah untuk pastikan data cukup
   const from = new Date(fromDate + 'T00:00:00');
   from.setDate(from.getDate() - 7);
   const to = new Date(toDate + 'T00:00:00');
   to.setDate(to.getDate() + 7);
 
-  const p1 = toUnix(from.toISOString().split('T')[0]);
-  const p2 = toUnix(to.toISOString().split('T')[0]);
+  const p1 = Math.floor(from.getTime() / 1000);
+  const p2 = Math.floor(to.getTime() / 1000);
 
-  const yahooUrl = `https://query1.finance.yahoo.com/v8/finance/chart/${symbol}?interval=1d&period1=${p1}&period2=${p2}&events=history`;
+  // Berbagai URL Yahoo Finance (v8 dan v7) + berbagai proxy publik
+  const yahooUrls = [
+    `https://query1.finance.yahoo.com/v8/finance/chart/${symbol}?interval=1d&period1=${p1}&period2=${p2}&events=history`,
+    `https://query2.finance.yahoo.com/v8/finance/chart/${symbol}?interval=1d&period1=${p1}&period2=${p2}&events=history`,
+  ];
 
-  const text = await fetchWithProxy(yahooUrl);
+  const proxies = [
+    u => `https://corsproxy.io/?url=${encodeURIComponent(u)}`,
+    u => `https://api.allorigins.win/raw?url=${encodeURIComponent(u)}`,
+    u => `https://thingproxy.freeboard.io/fetch/${u}`,
+    u => `https://api.codetabs.com/v1/proxy?quest=${u}`,
+  ];
 
-  let json;
-  try { json = JSON.parse(text); } catch(e) { throw new Error('Gagal parse data Yahoo Finance. Coba lagi.'); }
+  let lastErr = null;
 
-  const result = json?.chart?.result?.[0];
-  if (!result) {
-    const errMsg = json?.chart?.error?.description || 'Saham tidak ditemukan.';
-    throw new Error(`Yahoo Finance: ${errMsg}`);
+  for (const yahooUrl of yahooUrls) {
+    for (const makeProxy of proxies) {
+      try {
+        const proxyUrl = makeProxy(yahooUrl);
+        const r = await fetch(proxyUrl, {
+          signal: AbortSignal.timeout(15000),
+          headers: { 'Accept': 'application/json' }
+        });
+        if (!r.ok) throw new Error(`HTTP ${r.status}`);
+        const text = await r.text();
+        if (!text || text.length < 30) throw new Error('Respons kosong');
+
+        let json;
+        try { json = JSON.parse(text); } catch(e) { throw new Error('Bukan JSON valid'); }
+
+        const result = json?.chart?.result?.[0];
+        if (!result) {
+          const errMsg = json?.chart?.error?.description || 'Saham tidak ditemukan di Yahoo Finance.';
+          throw new Error(errMsg);
+        }
+
+        const timestamps = result.timestamp || [];
+        const ohlcv = result.indicators?.quote?.[0];
+        if (!timestamps.length || !ohlcv) throw new Error('Data kosong dari Yahoo Finance.');
+
+        const rows = [];
+        for (let i = 0; i < timestamps.length; i++) {
+          const date = new Date(timestamps[i] * 1000).toISOString().split('T')[0];
+          const open  = ohlcv.open?.[i];
+          const high  = ohlcv.high?.[i];
+          const low   = ohlcv.low?.[i];
+          const close = ohlcv.close?.[i];
+          if (open==null || high==null || low==null || close==null) continue;
+          if (date < fromDate || date > toDate) continue;
+          rows.push({ date, open: Math.round(open), high: Math.round(high), low: Math.round(low), close: Math.round(close) });
+        }
+
+        if (rows.length === 0) throw new Error('Tidak ada data perdagangan di rentang tanggal ini.');
+        return rows.sort((a,b) => a.date.localeCompare(b.date));
+
+      } catch(e) {
+        lastErr = e;
+        // lanjut ke proxy/URL berikutnya
+      }
+    }
   }
 
-  const timestamps = result.timestamp || [];
-  const ohlcv = result.indicators?.quote?.[0];
-  if (!timestamps.length || !ohlcv) throw new Error('Tidak ada data historis untuk saham ini.');
-
-  const rows = [];
-  for (let i = 0; i < timestamps.length; i++) {
-    const date = new Date(timestamps[i] * 1000).toISOString().split('T')[0];
-    const open  = ohlcv.open?.[i];
-    const high  = ohlcv.high?.[i];
-    const low   = ohlcv.low?.[i];
-    const close = ohlcv.close?.[i];
-    if (open==null || high==null || low==null || close==null) continue;
-    if (date < fromDate || date > toDate) continue;
-    rows.push({ date, open: Math.round(open), high: Math.round(high), low: Math.round(low), close: Math.round(close) });
-  }
-
-  if (rows.length === 0) throw new Error('Tidak ada data perdagangan untuk rentang tanggal ini. Mungkin hari libur/weekend semua, atau saham tidak aktif.');
-
-  return rows.sort((a,b) => a.date.localeCompare(b.date));
+  throw new Error(`Gagal mengambil data setelah mencoba semua sumber. Error: ${lastErr?.message || 'Unknown'}. Pastikan kode saham benar (contoh: BBCA, TLKM, GOTO).`);
 }
 
 function nearestAfter(data, target) {
