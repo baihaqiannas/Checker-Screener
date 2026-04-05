@@ -324,7 +324,26 @@ async function fromStooq(ticker, fromDate, toDate) {
     rows.push({date,open:Math.round(o),high:Math.round(h),low:Math.round(l),close:Math.round(cl)});
   }
   if(rows.length===0) throw new Error('Stooq: tidak ada data di rentang ini');
-  return rows.sort((a,b)=>a.date.localeCompare(b.date));
+  const clean=sanitizeOHLC(rows.sort((a,b)=>a.date.localeCompare(b.date)));
+  if(clean.length===0) throw new Error('Stooq: semua baris gagal validasi OHLC');
+  return clean;
+}
+
+// ── Validasi OHLC: pastikan logika harga masuk akal ─────────────────────────
+function sanitizeOHLC(rows) {
+  return rows.filter(d => {
+    // HIGH harus >= OPEN, CLOSE, LOW; LOW harus <= ketiganya
+    if(d.high < d.open || d.high < d.close || d.high < d.low) return false;
+    if(d.low > d.open || d.low > d.close || d.low > d.high) return false;
+    return true;
+  });
+}
+
+// ── Konversi timestamp Yahoo ke tanggal WIB (UTC+7) ─────────────────────────
+function tsToWIBDate(ts) {
+  // Saham IDX trading di WIB (UTC+7), bukan UTC
+  const wibMs = (ts + 7*3600) * 1000;
+  return new Date(wibMs).toISOString().split('T')[0];
 }
 
 // ── Source 2: Yahoo Finance v8 JSON ───────────────────────────────────────
@@ -339,8 +358,8 @@ async function fromYahoo(ticker, fromDate, toDate) {
   };
 
   const urls=[
-    `https://query1.finance.yahoo.com/v8/finance/chart/${sym}?interval=1d&period1=${p1}&period2=${p2}&events=history`,
-    `https://query2.finance.yahoo.com/v8/finance/chart/${sym}?interval=1d&period1=${p1}&period2=${p2}&events=history`,
+    `https://query1.finance.yahoo.com/v8/finance/chart/${sym}?interval=1d&period1=${p1}&period2=${p2}&events=history&includeAdjustedClose=false`,
+    `https://query2.finance.yahoo.com/v8/finance/chart/${sym}?interval=1d&period1=${p1}&period2=${p2}&events=history&includeAdjustedClose=false`,
   ];
   let lastErr;
   for(const url of urls){
@@ -354,14 +373,18 @@ async function fromYahoo(ticker, fromDate, toDate) {
       if(!ts.length||!q) throw new Error('data kosong');
       const rows=[];
       for(let i=0;i<ts.length;i++){
-        const date=new Date(ts[i]*1000).toISOString().split('T')[0];
+        // FIX: pakai WIB (UTC+7) bukan UTC agar tanggal tidak geser 1 hari
+        const date=tsToWIBDate(ts[i]);
         const o=q.open?.[i],h=q.high?.[i],l=q.low?.[i],c=q.close?.[i];
         if(o==null||h==null||l==null||c==null) continue;
         if(date<fromDate||date>toDate) continue;
         rows.push({date,open:Math.round(o),high:Math.round(h),low:Math.round(l),close:Math.round(c)});
       }
       if(rows.length===0) throw new Error('tidak ada data di rentang ini');
-      return rows.sort((a,b)=>a.date.localeCompare(b.date));
+      // FIX: filter baris dengan OHLC tidak logis (misal HIGH=OPEN dari sumber buruk)
+      const clean=sanitizeOHLC(rows.sort((a,b)=>a.date.localeCompare(b.date)));
+      if(clean.length===0) throw new Error('semua baris gagal validasi OHLC');
+      return clean;
     }catch(e){lastErr=e;}
   }
   throw lastErr||new Error('Yahoo gagal');
@@ -405,14 +428,53 @@ async function fromStooqAlt(ticker, fromDate, toDate) {
           if(date<fromDate||date>toDate) continue;
           rows.push({date,open:Math.round(o),high:Math.round(h),low:Math.round(l),close:Math.round(cl)});
         }
-        if(rows.length>0) return rows.sort((a,b)=>a.date.localeCompare(b.date));
+        if(rows.length>0){
+          const clean=sanitizeOHLC(rows.sort((a,b)=>a.date.localeCompare(b.date)));
+          if(clean.length>0) return clean;
+        }
       }catch(e){lastErr=e;}
     }
   }
   throw lastErr||new Error('Stooq direct gagal');
 }
 
-// ── Master: Stooq → Yahoo → Stooq Direct, pakai cache ────────────────────
+// ── Source 4: Yahoo Finance v7 (format berbeda, sering lebih akurat) ─────────
+async function fromYahooV7(ticker, fromDate, toDate) {
+  const sym=ticker.toUpperCase()+'.JK';
+  const p1=Math.floor(new Date(dateShift(fromDate,-10)+'T00:00:00Z').getTime()/1000);
+  const p2=Math.floor(new Date(dateShift(toDate,10)+'T00:00:00Z').getTime()/1000);
+  const isYahooJSON = txt => {
+    try { const j=JSON.parse(txt); return !!(j?.chart); } catch(e){return false;}
+  };
+  const url=`https://query1.finance.yahoo.com/v7/finance/download/${sym}?period1=${p1}&period2=${p2}&interval=1d&events=history`;
+  // v7 returns CSV format: Date,Open,High,Low,Close,Adj Close,Volume
+  const isCSV = txt => {
+    const t=txt.trim();
+    if(t.startsWith('<')||t.startsWith('{')) return false;
+    return t.toLowerCase().includes('date') && t.toLowerCase().includes('open');
+  };
+  try {
+    const txt=await proxyRace(url, isCSV, 15000);
+    const lines=txt.trim().split('\n');
+    if(lines.length<2) throw new Error('v7 kosong');
+    const rows=[];
+    for(let i=1;i<lines.length;i++){
+      const c=lines[i].split(',');
+      if(c.length<6) continue;
+      const date=c[0].trim();
+      const o=+c[1],h=+c[2],l=+c[3],cl=+c[4];
+      if(isNaN(o)||isNaN(h)||isNaN(l)||isNaN(cl)||o===0) continue;
+      if(date<fromDate||date>toDate) continue;
+      rows.push({date,open:Math.round(o),high:Math.round(h),low:Math.round(l),close:Math.round(cl)});
+    }
+    if(rows.length===0) throw new Error('v7: tidak ada data di rentang ini');
+    const clean=sanitizeOHLC(rows.sort((a,b)=>a.date.localeCompare(b.date)));
+    if(clean.length===0) throw new Error('v7: semua baris gagal validasi OHLC');
+    return clean;
+  } catch(e) { throw e; }
+}
+
+// ── Master: Stooq → Yahoo → Stooq Direct → Yahoo v7, pakai cache ─────────
 async function fetchData(ticker, fromDate, toDate, stepIds) {
   const key=ck(ticker,fromDate,toDate);
   const cached=cGet(key);
@@ -446,7 +508,15 @@ async function fetchData(ticker, fromDate, toDate, stepIds) {
     const data=await fromStooqAlt(ticker,fromDate,toDate);
     stepSet(stepIds[2],'done','Stooq Direct ✓');
     cSet(key,data); return {data,source:'Stooq-Direct'};
-  }catch(e){ stepSet(stepIds[2],'fail','Semua sumber gagal'); errs.push('Stooq-Direct: '+e.message); }
+  }catch(e){ stepSet(stepIds[2],'fail','Stooq direct gagal → coba Yahoo v7...'); errs.push('Stooq-Direct: '+e.message); }
+
+  // Source 4: Yahoo Finance v7 CSV
+  if(stepIds[3]!=null) stepSet(stepIds[3],'active','Yahoo Finance v7 (CSV)...');
+  try{
+    const data=await fromYahooV7(ticker,fromDate,toDate);
+    if(stepIds[3]!=null) stepSet(stepIds[3],'done','Yahoo v7 ✓');
+    cSet(key,data); return {data,source:'Yahoo-v7'};
+  }catch(e){ if(stepIds[3]!=null) stepSet(stepIds[3],'fail','Semua sumber gagal'); errs.push('Yahoo-v7: '+e.message); }
 
   throw new Error(
     `Data <b>${ticker}</b> tidak berhasil diambil dari semua sumber.<br><br>`+
@@ -466,9 +536,9 @@ async function runDaily() {
   if(!ticker) return showError('Masukkan kode saham.');
   if(!dateVal) return showError('Pilih tanggal screener.');
   const endDate=addBizDays(dateVal,35);
-  showLoading([`Stooq (${ticker}.ID)`,`Yahoo Finance (${ticker}.JK)`,`Stooq Direct`]);
+  showLoading([`Stooq (${ticker}.ID)`,`Yahoo Finance (${ticker}.JK)`,`Stooq Direct`,`Yahoo Finance v7`]);
   try{
-    const {data,source}=await fetchData(ticker,dateVal,endDate,[0,1,2]);
+    const {data,source}=await fetchData(ticker,dateVal,endDate,[0,1,2,3]);
     document.getElementById('daily-badge').innerHTML=
       ticker+(source==='cache'?'<span class="cache-tag">CACHE</span>':'<span class="cache-tag">'+source+'</span>');
     document.getElementById('daily-meta').innerHTML=`Screener: ${dateVal}<br>${data.length} hari tersedia`;
@@ -516,9 +586,9 @@ async function runSwing() {
   if(!ticker) return showError('Masukkan kode saham.');
   if(!startVal||!endVal) return showError('Pilih rentang tanggal.');
   if(startVal>=endVal) return showError('Tanggal akhir harus lebih besar dari tanggal mulai.');
-  showLoading([`Stooq (${ticker}.ID)`,`Yahoo Finance (${ticker}.JK)`,`Stooq Direct`]);
+  showLoading([`Stooq (${ticker}.ID)`,`Yahoo Finance (${ticker}.JK)`,`Stooq Direct`,`Yahoo Finance v7`]);
   try{
-    const {data,source}=await fetchData(ticker,startVal,endVal,[0,1,2]);
+    const {data,source}=await fetchData(ticker,startVal,endVal,[0,1,2,3]);
     const fo=data[0].open,lc=data[data.length-1].close;
     const hh=Math.max(...data.map(d=>d.high)),ll=Math.min(...data.map(d=>d.low));
     const pH=calcPct(hh,fo),pL=calcPct(ll,fo),pC=calcPct(lc,fo);
